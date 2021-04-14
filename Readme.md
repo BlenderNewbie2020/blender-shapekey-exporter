@@ -1,6 +1,6 @@
-# Shapekey Exporter (blender addon)
+# Experimental Shapekey Exporter (blender addon)
 
-Addon to export and import relative shapekeys for all objects in the scene.
+Addon to export and import relative shapekeys for the active object in the scene.
 
 ## Install
 
@@ -22,9 +22,6 @@ This button imports shapekeys from the saved file.
 
 Caution: All shapekeys defined in save file will overwrite those in the objects in the scene.
 
-## Todo
-
-Restrict export and import to active object only.
 
 ## License
 
