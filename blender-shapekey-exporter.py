@@ -2,20 +2,22 @@ import bpy
 from bpy.props import *
 from bpy.types import Scene
 from bpy_extras.io_utils import ExportHelper, ImportHelper
-import mathutils
+from mathutils import Vector
 import json
+import operator
+
 
 bl_info = {
     "name" : "Shapekey Exporter",
-    "author" : "BlenderNewbie2020",
+    "author" : "Blender Newbie",
     'category': 'Import-Export',
     'location': 'View 3D > Tool Shelf > Shapekey Exporter',
-    'warning': 'Tested insufficiently',
-    'description': 'Name based shapekey export and import tool. Original code by Narazaka.',
-    "version" : (0, 2, 1),
+    'description': 'Experimental shapekey export/import tool based on https://github.com/Narazaka/blender-shapekey-exporter/issues by Narazaka',
+    "version" : (0, 3, 0),
     "blender" : (2, 79, 0),
     'tracker_url': 'https://github.com/BlenderNewbie2020/blender-shapekey-exporter/issues',
 }
+
 
 class ShapekeyExporter_PT_Main(bpy.types.Panel):
     bl_idname = "shapekey_exporter.main"
@@ -30,103 +32,106 @@ class ShapekeyExporter_PT_Main(bpy.types.Panel):
         self.layout.operator(ShapekeyExporter_OT_Import.bl_idname)
         return None
 
+
 class ShapekeyExporter_OT_Export(bpy.types.Operator, ExportHelper):
+    ''' Create a json file of shapekeys for the active mesh object '''
     bl_idname = "shapekey_exporter.export"
     bl_label = "Export"
     bl_options = {'REGISTER'}
 
-    filename_ext = ".skx.json" 
-    
-    filter_glob = StringProperty( 
-            default="*.skx.json", 
-            options={'HIDDEN'}, 
+    filename_ext = ".skx.json"
+    filter_glob = StringProperty(
+            default="*.skx.json",
+            options={'HIDDEN'},
             )
 
     def execute(self, context):
         if self.filepath == "":
             return {'FINISHED'}
 
-        data = {}
-        for object_name in bpy.data.objects.keys():
-            obj = bpy.data.objects[object_name]
-            if obj.type != 'MESH' or not obj.data.shape_keys:
-                continue
-            base_key_block = obj.data.shape_keys.reference_key
-            base_key_values = [item.co for item in base_key_block.data.values()]
+        obj = bpy.context.object
+        if obj.type != 'MESH' or not obj.data.shape_keys:
+            raise RuntimeError("No active mesh with shape keys")
 
-            key_blocks = obj.data.shape_keys.key_blocks
-            data[object_name] = {
-                "base": base_key_block.name,
-                "diffs": [],
-            }
-            for key_block_name in key_blocks.keys():
-                key_block = key_blocks[key_block_name]
-                if base_key_block == key_block: # base
-                    continue
-                key_values = [item.co for item in key_block.data.values()]
-                if len(key_values) != len(base_key_values):
-                    raise RuntimeError("mesh vertex count is different: " + key_block_name)
-                diff_key_values = []
-                for i in range(len(key_values)):
-                    diff_key_values.append((key_values[i] - base_key_values[i])[:])
-                data[object_name]["diffs"].append({
-                    "name": key_block_name,
-                    "values": diff_key_values,
-                })
+        shapekeys = obj.data.shape_keys
+        basis_name = shapekeys.reference_key.name
+        shapekey_names = [s for i, s in enumerate(shapekeys.key_blocks.keys())]
+
+        # create a dictionary of [ vector values ] for each shapekey
+        shapekey_vectors = {k.name: [item.co for item in k.data.values()] for k in shapekeys.key_blocks}
+
+        # create a dictionary of [ deltas for all vectors ] for each shapekey
+        shapekey_deltas = {k: [tuple(a - b) for a, b in zip(shapekey_vectors[k], shapekey_vectors[basis_name])] for k in shapekey_names if k != basis_name}
 
         with open(self.filepath, mode='w', encoding="utf8") as f:
-            json.dump(data, f, sort_keys=True, indent='', ensure_ascii=False)
+            json.dump(shapekey_deltas, f, sort_keys=True, indent='', ensure_ascii=False)
 
         return {'FINISHED'}
 
+
 class ShapekeyExporter_OT_Import(bpy.types.Operator, ImportHelper):
+    ''' Import shape keys from a json file for the active mesh object '''
     bl_idname = "shapekey_exporter.import"
     bl_label = "Import"
     bl_options = {'REGISTER', 'UNDO'}
 
-    filename_ext = ".skx.json" 
-    
-    filter_glob = StringProperty( 
-            default="*.skx.json", 
-            options={'HIDDEN'}, 
+    filename_ext = ".skx.json"
+
+    filter_glob = StringProperty(
+            default="*.skx.json",
+            options={'HIDDEN'},
             )
 
     def execute(self, context):
-        data = None
+        obj = bpy.context.object
+        if obj.type != 'MESH':
+            raise RuntimeError("Object is not a mesh")
+
+        # deltas is a dictionary of shapekey tuples
         with open(self.filepath, mode='r', encoding="utf8") as f:
-            data = json.load(f)
+            deltas = json.load(f)
 
-        for object_name in data.keys():
-            if len(data[object_name]["diffs"]) == 0:
-                continue
-            obj = bpy.data.objects[object_name]
-            if obj.type != 'MESH':
-                continue
+        # ensure basis key
+        if not obj.data.shape_keys:
+            obj.shape_key_add(name = 'basis')
 
-            # ensure base key
-            if not obj.data.shape_keys:
-                obj.shape_key_add()
-                obj.data.shape_keys.key_blocks[-1].name = data[object_name]["base"]
-            base_key_block = obj.data.shape_keys.reference_key
-            base_key_values = [item.co for item in base_key_block.data.values()]
+        shapekeys = obj.data.shape_keys
+        shapekey_blocks = shapekeys.key_blocks
 
-            key_blocks = obj.data.shape_keys.key_blocks
-            # overwrite always (TODO: selectable)
-            for key_block_data in data[object_name]["diffs"]:
-                key_block_name = key_block_data["name"]
-                key_block = key_blocks.get(key_block_name)
-                if not key_block:
-                    obj.shape_key_add()
-                    key_blocks[-1].name = key_block_name
-                if base_key_block == key_block: # base
-                    continue
-                key_values = [mathutils.Vector(vec) for vec in key_block_data["values"]]
-                if len(key_values) != len(base_key_values):
-                    raise RuntimeError("mesh vertex count is different: " + key_block_name)
-                for i in range(len(key_values)):
-                    key_blocks[key_block_name].data[i].co = key_values[i] + base_key_values[i]
+        basis_block = shapekeys.reference_key
+        basis_name = shapekeys.reference_key.name
+        basis_vectors = [item.co for item in basis_block.data.values()]
+
+        delta_names = [s for i, s in enumerate(deltas)]
+
+        for shapekey in delta_names:
+            if not shapekey_blocks.get(shapekey):
+               key = obj.shape_key_add(name=shapekey, from_mix=False)
+
+            if len(deltas[shapekey]) != len(basis_vectors):
+                raise RuntimeError("mesh vertex count is different: " + shapekey)
+
+            ''' use one of
+            # first, convert [ lists to vectors ]
+            key_vectors = [Vector(vec) for vec in deltas[shapekey]]
+            timeit.timeit(lambda: '[a + b for a, b in zip(key_vectors, basis_vectors)]', number=1000)
+            key_values = [a + b for a, b in zip(key_vectors, basis_vectors)]
+
+            # or, map an operator
+            timeit.timeit(lambda: '[Vector(map(operator.add, a, b)) for a, b in zip(deltas[shapekey], basis_vectors)]', number=1000)
+            key_values = [Vector(map(operator.add, a, b)) for a, b in zip(deltas[shapekey], basis_vectors)]
+
+            # or, just map
+            timeit.timeit(lambda: '[Vector(map(float.__add__, a, b)) for a, b in zip(deltas[shapekey], basis_vectors)]', number=1000)
+            key_values = [Vector(map(float.__add__, a, b)) for a, b in zip(deltas[shapekey], basis_vectors)]
+            '''
+
+            key_values = [Vector(map(float.__add__, a, b)) for a, b in zip(deltas[shapekey], basis_vectors)]
+            for i in range(len(key_values)):
+                shapekey_blocks[shapekey].data[i].co = key_values[i]
 
         return {'FINISHED'}
+
 
 classes = (
     ShapekeyExporter_PT_Main,
@@ -134,13 +139,16 @@ classes = (
     ShapekeyExporter_OT_Import,
 )
 
+
 def register():
     for cls in classes:
         bpy.utils.register_class(cls)
 
+
 def unregister():
     for cls in classes:
         bpy.utils.unregister_class(cls)
+
 
 if __name__ == "__main__":
     register()
